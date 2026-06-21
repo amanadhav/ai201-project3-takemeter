@@ -171,8 +171,8 @@ After running the notebook and obtaining wrong predictions, the plan is to:
 - [x] AI Tool Plan: label stress-testing complete
 - [x] AI Tool Plan: annotation assistance approach documented
 - [x] AI Tool Plan: failure analysis plan documented
-- [ ] 200+ examples collected and labeled
-- [ ] Label distribution verified (no label > 70%)
-- [ ] Fine-tuning pipeline run
-- [ ] Groq baseline run
-- [ ] Evaluation report written
+- [x] 200+ examples collected and labeled (239 total)
+- [x] Label distribution verified (33/33/33% — no label above 70%)
+- [x] Fine-tuning pipeline run (DistilBERT, 3 epochs, T4 GPU)
+- [x] Groq baseline run (llama-3.3-70b-versatile, zero-shot)
+- [x] Evaluation report written (see README)
