@@ -1,252 +1,217 @@
 """
 collect_rsoccer.py
 ------------------
-Pulls posts and comments from r/soccer using the official Reddit API via PRAW.
-
-SETUP (one-time, 2 minutes):
-  1. Go to https://www.reddit.com/prefs/apps
-  2. Scroll to the bottom, click "create another app"
-  3. Fill in:
-       Name: takemeter-collector  (anything works)
-       Type: select "script"
-       Redirect URI: http://localhost:8080
-  4. Click "create app"
-  5. Copy the CLIENT_ID (short string under the app name)
-     and CLIENT_SECRET (the "secret" field)
-  6. Paste them into the variables below (or use a .env file)
+Pulls posts and comments from r/soccer using the Arctic Shift API
+(free, open Reddit archive — no account or API key required).
 
 OUTPUT:
-  data/rsoccer_raw.csv  — text column filled, label column empty.
-  Open that file, read each row, and fill in the label column:
+  data/rsoccer_raw.csv  — text column filled, label column blank.
+  Open the file, fill in the 'label' column for each row:
     analysis | hot_take | reaction
+  Then save as data/rsoccer_labeled.csv before running the notebook.
 
 Usage:
-    pip install praw pandas
+    pip install requests pandas
     python data/collect_rsoccer.py
-
-Requirements:
-    pip install praw pandas
 """
 
 import csv
 import time
-import praw
+import requests
 import pandas as pd
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Reddit API credentials — fill these in before running
+# Config
 # ---------------------------------------------------------------------------
 
-CLIENT_ID     = "YOUR_CLIENT_ID"       # short string under app name
-CLIENT_SECRET = "YOUR_CLIENT_SECRET"   # "secret" field in the app
-USER_AGENT    = "takemeter-collector/1.0 by YOUR_REDDIT_USERNAME"
-
-# Optional: set these to fetch user-specific data or avoid read-only limits
-# Leave as empty strings to use read-only mode (no login required).
-REDDIT_USERNAME = ""
-REDDIT_PASSWORD = ""
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-OUT_PATH         = Path(__file__).parent / "rsoccer_raw.csv"
-SUBREDDIT        = "soccer"
-POSTS_PER_FEED   = 100       # max Reddit allows per request
-COMMENTS_PER_THREAD = 20     # top-level comments per match thread
-MIN_TEXT_LEN     = 40        # skip very short posts
-
-# ---------------------------------------------------------------------------
-# Build the PRAW client
-# ---------------------------------------------------------------------------
-
-def build_reddit() -> praw.Reddit:
-    if REDDIT_USERNAME and REDDIT_PASSWORD:
-        return praw.Reddit(
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            user_agent=USER_AGENT,
-            username=REDDIT_USERNAME,
-            password=REDDIT_PASSWORD,
-        )
-    return praw.Reddit(
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        user_agent=USER_AGENT,
-    )
+BASE     = "https://arctic-shift.photon-reddit.com/api"
+SUB      = "soccer"
+OUT      = Path(__file__).parent / "rsoccer_raw.csv"
+HEADERS  = {"User-Agent": "takemeter-data-collector/1.0 (academic project)"}
+MIN_LEN  = 40
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def clean(text: str) -> str:
-    return " ".join(text.split())
+def fetch(endpoint, params):
+    url = f"{BASE}/{endpoint}"
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, headers=HEADERS, timeout=20)
+            r.raise_for_status()
+            return r.json().get("data") or []
+        except Exception as e:
+            print(f"    retry {attempt+1}: {e}")
+            time.sleep(3)
+    return []
 
 
-def is_match_thread(title: str) -> bool:
-    keywords = ["match thread", "post match", "pre-match", "post-match",
-                 "half time", "half-time", "ft:", "ft |", "[ft]"]
-    tl = title.lower()
-    return any(k in tl for k in keywords)
+def clean(text):
+    return " ".join(str(text or "").split())
 
+
+def is_match_thread(title):
+    kw = ["match thread", "post match", "pre-match", "post-match",
+          "half time", "half-time", "[ft]", "ft |", "ft:"]
+    t = title.lower()
+    return any(k in t for k in kw)
+
+
+def unix_days_ago(days):
+    return int(time.time()) - days * 86400
 
 # ---------------------------------------------------------------------------
 # Collectors
 # ---------------------------------------------------------------------------
 
-def collect_posts(sub) -> list[dict]:
-    """Pull from hot, top (week), top (month), controversial, new feeds."""
-    feeds = [
-        ("hot",           sub.hot(limit=POSTS_PER_FEED)),
-        ("top_week",      sub.top("week",  limit=POSTS_PER_FEED)),
-        ("top_month",     sub.top("month", limit=POSTS_PER_FEED)),
-        ("controversial", sub.controversial("month", limit=POSTS_PER_FEED)),
-        ("new",           sub.new(limit=POSTS_PER_FEED)),
+def collect_posts():
+    """
+    Fetch posts across multiple time windows to capture variety:
+      - recent posts  -> reactions, quick takes
+      - older window  -> more analytical pieces that accumulated discussion
+    Uses sort=desc (by created_utc) within each window.
+    """
+    windows = [
+        ("last 7 days",    unix_days_ago(7),   unix_days_ago(0)),
+        ("7-30 days ago",  unix_days_ago(30),  unix_days_ago(7)),
+        ("30-90 days ago", unix_days_ago(90),  unix_days_ago(30)),
+        ("90-180 days ago",unix_days_ago(180), unix_days_ago(90)),
     ]
 
-    seen_ids = set()
-    rows = []
+    seen, rows = set(), []
 
-    for feed_name, feed in feeds:
-        print(f"  Fetching {feed_name}...")
-        try:
-            for post in feed:
-                if post.id in seen_ids:
-                    continue
-                seen_ids.add(post.id)
+    for label, after, before in windows:
+        print(f"  Posts [{label}]...")
+        items = fetch("posts/search", {
+            "subreddit": SUB,
+            "limit":     100,
+            "sort":      "desc",
+            "after":     after,
+            "before":    before,
+        })
+        new = 0
+        for p in items:
+            pid = p.get("id", "")
+            if pid in seen:
+                continue
+            seen.add(pid)
 
-                selftext = (post.selftext or "").strip()
-                title    = (post.title    or "").strip()
+            title    = clean(p.get("title", ""))
+            selftext = clean(p.get("selftext", ""))
 
-                if selftext and selftext not in ("[deleted]", "[removed]"):
-                    text = f"{title} — {selftext}"
-                else:
-                    text = title
+            if selftext and selftext not in ("[deleted]", "[removed]"):
+                text = f"{title} -- {selftext}"
+            else:
+                text = title
 
-                text = clean(text)
-                if len(text) < MIN_TEXT_LEN:
-                    continue
+            if len(text) < MIN_LEN:
+                continue
 
-                rows.append({
-                    "text":    text,
-                    "label":   "",
-                    "source":  "post",
-                })
-        except Exception as e:
-            print(f"    Error in {feed_name}: {e}")
+            rows.append({"text": text, "label": "", "source": "post"})
+            new += 1
+        print(f"    -> {new} new posts (total so far: {len(rows)})")
+        time.sleep(0.8)
 
-    print(f"  → {len(rows)} posts collected.")
     return rows
 
 
-def collect_match_thread_comments(sub) -> list[dict]:
+def collect_comments():
     """
-    Pull top comments from match threads — the richest source of
-    reaction-label examples in r/soccer.
+    Pull comments from two types of threads:
+      - match threads       -> almost always 'reaction'
+      - high-comment posts  -> mix of hot_take and reaction
     """
     rows = []
-    print("\n  Scanning hot feed for match/post-match threads...")
+    print("\n  Finding threads for comment collection...")
 
-    threads = []
-    try:
-        for post in sub.hot(limit=100):
-            if is_match_thread(post.title):
-                threads.append(post)
-    except Exception as e:
-        print(f"    Error fetching hot feed: {e}")
-        return rows
+    # Get post listing to find match threads and high-comment posts
+    posts = fetch("posts/search", {
+        "subreddit": SUB,
+        "limit":     100,
+        "sort":      "desc",
+        "after":     unix_days_ago(30),
+    })
 
-    print(f"  → Found {len(threads)} match threads. Pulling comments...")
+    match_ids = [p["id"] for p in posts if is_match_thread(p.get("title", ""))][:8]
+    discuss_ids = [
+        p["id"] for p in posts
+        if not is_match_thread(p.get("title", ""))
+        and int(p.get("num_comments", 0)) > 150
+    ][:6]
 
-    for post in threads[:10]:   # cap at 10 threads
-        print(f"    {post.title[:70]}")
-        try:
-            post.comment_sort = "top"
-            post.comments.replace_more(limit=0)
-            count = 0
-            for comment in post.comments:
-                body = clean(comment.body or "")
-                if len(body) < MIN_TEXT_LEN or body in ("[deleted]", "[removed]"):
+    print(f"  Found {len(match_ids)} match threads, {len(discuss_ids)} discussion posts")
+
+    for src, post_ids, limit in [
+        ("match_thread_comment",  match_ids,   25),
+        ("discussion_comment",    discuss_ids, 15),
+    ]:
+        for pid in post_ids:
+            comments = fetch("comments/search", {
+                "link_id": f"t3_{pid}",
+                "limit":   limit,
+                "sort":    "desc",
+            })
+            added = 0
+            for c in comments:
+                body = clean(c.get("body", ""))
+                if len(body) < MIN_LEN or body in ("[deleted]", "[removed]"):
                     continue
-                rows.append({
-                    "text":   body,
-                    "label":  "",
-                    "source": "match_thread_comment",
-                })
-                count += 1
-                if count >= COMMENTS_PER_THREAD:
-                    break
-        except Exception as e:
-            print(f"    Error fetching comments: {e}")
-        time.sleep(1)
+                rows.append({"text": body, "label": "", "source": src})
+                added += 1
+            if added:
+                print(f"    post {pid}: +{added} comments ({src})")
+            time.sleep(0.5)
 
-    print(f"  → {len(rows)} match-thread comments collected.")
+    print(f"  -> {len(rows)} comments total")
     return rows
-
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    if "YOUR_CLIENT_ID" in CLIENT_ID:
-        print("=" * 60)
-        print("ERROR: You need to fill in your Reddit API credentials.")
-        print()
-        print("SETUP:")
-        print("  1. Go to https://www.reddit.com/prefs/apps")
-        print("  2. Click 'create another app'")
-        print("  3. Name: anything | Type: script | Redirect URI: http://localhost:8080")
-        print("  4. Click 'create app'")
-        print("  5. Paste CLIENT_ID and CLIENT_SECRET into this script")
-        print("     (or into a .env file and load with python-dotenv)")
-        print("=" * 60)
-        return
+    print("=" * 55)
+    print("TakeMeter -- r/soccer data collector")
+    print("Source: Arctic Shift API (no login needed)")
+    print("=" * 55)
 
-    print("=" * 60)
-    print("TakeMeter — r/soccer data collector")
-    print("=" * 60)
-
-    reddit = build_reddit()
-    sub    = reddit.subreddit(SUBREDDIT)
-
-    print(f"\nConnected — collecting from r/{SUBREDDIT}\n")
-
-    post_rows    = collect_posts(sub)
-    comment_rows = collect_match_thread_comments(sub)
+    post_rows    = collect_posts()
+    comment_rows = collect_comments()
 
     all_rows = post_rows + comment_rows
     df = pd.DataFrame(all_rows, columns=["text", "label", "source"])
     df = df.drop_duplicates(subset="text").reset_index(drop=True)
     df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-    df.to_csv(OUT_PATH, index=False, quoting=csv.QUOTE_ALL)
+    df.to_csv(OUT, index=False, quoting=csv.QUOTE_ALL)
 
-    label_guide = {
-        "post":                 "mostly hot_take / analysis — read carefully",
-        "match_thread_comment": "almost always reaction — fast to label",
-    }
-
-    print(f"\n{'=' * 60}")
-    print(f"Saved {len(df)} examples  →  {OUT_PATH}")
+    print()
+    print("=" * 55)
+    print(f"Saved {len(df)} examples -> {OUT.name}")
     print()
     print("Source breakdown:")
+    hints = {
+        "post":                  "mixed -- read for all 3 labels",
+        "match_thread_comment":  "almost always reaction -- label fast",
+        "discussion_comment":    "hot_take / reaction mix",
+    }
     for src, count in df["source"].value_counts().items():
-        print(f"  {src:<30} {count:>4}   ({label_guide.get(src, '')})")
-    print(f"{'=' * 60}")
+        print(f"  {src:<30} {count:>4}   {hints.get(src,'')}")
+    print("=" * 55)
     print()
     print("NEXT STEPS:")
-    print("  1. Open data/rsoccer_raw.csv in Excel or VS Code")
-    print("  2. Fill in the 'label' column for each row:")
-    print("       analysis  — structured argument with specific evidence")
-    print("       hot_take  — bold opinion asserted without evidence")
-    print("       reaction  — emotional response to a specific event")
-    print("  3. Aim for ≥200 labeled rows; target ~65-70 per label")
-    print("  4. Save as data/rsoccer_labeled.csv when done")
+    print("  1. Open data/rsoccer_raw.csv in Excel or a text editor")
+    print("  2. Fill the 'label' column for each row:")
+    print("       analysis  -- structured argument with specific evidence")
+    print("       hot_take  -- bold opinion asserted without evidence")
+    print("       reaction  -- emotional response to a specific event")
+    print("  3. Label at least 200 rows; aim for ~65-70 per label")
+    print("  4. Delete the 'source' column, save as rsoccer_labeled.csv")
     print()
-    print("TIP: Sort by 'source' to batch your labeling — match thread")
-    print("     comments are almost always 'reaction' and go fast.")
+    print("TIP: Sort by 'source' to batch-label by type.")
+    print("     match_thread_comment rows are almost always 'reaction'.")
 
 
 if __name__ == "__main__":
