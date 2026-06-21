@@ -227,21 +227,21 @@ The model achieved 100% recall on `analysis` because analytical posts have the s
 
 ## Sample Classifications
 
-Five posts run through the fine-tuned model with predicted label and confidence score:
+Five posts run through the fine-tuned model with predicted label and confidence score (actual outputs from Section 7 of the notebook):
 
-| Post (truncated to 120 chars) | True Label | Predicted | Confidence |
-|---|---|---|---|
-| "City's high line is why they're conceding headers — opponents win 68% of aerial duels, up from 54% last year…" | `analysis` | ✅ `analysis` | 0.96 |
-| "Is Ronaldo's hattrick vs Spain in 2018 the greatest ever??? Genuinely think no other player pulls that off…" | `hot_take` | ✅ `hot_take` | 0.79 |
-| "THAT Bellingham header. What an absolute player. Can't believe what I just watched." | `reaction` | ✅ `reaction` | 0.88 |
-| "Ferran is such a bum — how does he keep getting called up to the national team?" | `reaction` | ❌ `hot_take` | 0.74 |
-| "Germany's 7-1 means they've already matched the total big-margin WC wins from 2018 and 2022 combined." | `reaction` | ❌ `analysis` | 0.61 |
+| Post (truncated) | True | Predicted | Conf | All scores (analysis / hot_take / reaction) |
+|---|---|---|---|---|
+| "City's high line is why they're conceding headers — opponents win 68% aerial duels, up from 54% last year…" | `analysis` | ✅ `analysis` | 0.356 | 0.356 / 0.312 / 0.333 |
+| "Is Ronaldo's hattrick vs Spain in 2018 the greatest ever??? Genuinely think no other player pulls that off…" | `hot_take` | ❌ `reaction` | 0.351 | 0.320 / 0.329 / 0.351 |
+| "THAT Bellingham header. What an absolute player. Can't believe what I just watched." | `reaction` | ❌ `hot_take` | 0.359 | 0.314 / 0.359 / 0.327 |
+| "Ferran is such a bum — how does he keep getting called up to the national team?" | `reaction` | ❌ `hot_take` | 0.345 | 0.320 / 0.345 / 0.335 |
+| "The current Real Madrid team might be underrated. Nobody talks about their depth but it's genuinely elite." | `hot_take` | ✅ `hot_take` | 0.349 | 0.323 / 0.349 / 0.329 |
 
-**Why the first prediction is correct:** The City high-line post is a well-formed analytical argument. It names a specific tactical setup (high line), provides a verifiable stat (68% aerial duel win rate), offers a year-over-year comparison (up from 54%), and draws a causal conclusion (costing them points). Every component of the `analysis` definition is present, and the model correctly predicted it with 0.96 confidence.
+**Note on confidence scores:** All predictions land in the 0.33–0.36 range — barely above uniform (0.33). This is expected behavior for a subjective task trained on 167 examples. The model learned weak but real signals: the argmax is correct 69.44% of the time on the held-out test set even though no individual prediction is high-confidence. These hand-crafted synthetic examples (written to illustrate label types, not drawn from the training distribution) are harder for the model than actual Reddit posts, which is reflected in the 2/5 accuracy on this table vs. 69.44% on the real test set.
 
-**Why the fourth prediction is wrong:** "Ferran is such a bum" was labeled `reaction` because it was posted as a match thread comment during a Spain game — it's an in-the-moment complaint while watching, not a considered opinion. But the model never sees the match thread context. It reads evaluative language ("bum", questioning national team selection) and correctly identifies the surface form of a `hot_take`. The model isn't wrong about the *text* — it's missing the *context* that changes the label.
+**Why the first prediction is correct:** The City high-line post has the strongest surface fingerprint for `analysis` in the training data: a named tactical setup, a verifiable percentage, a year-over-year comparison, and a causal conclusion. The model assigns it the highest `analysis` probability of the five examples (0.356), correctly distinguishing it — even if by a slim margin.
 
-*Note: Confidence scores shown are representative values from test-set examples classified during the Colab evaluation run.*
+**Why the fourth prediction is wrong:** "Ferran is such a bum" was labeled `reaction` because it was a match thread comment during a Spain game — an in-the-moment complaint, not a considered opinion. The model has no access to that context. Evaluative language about a player ("bum", questioning national team selection) reads identically to a `hot_take` in raw text. This is the same failure mode as the dominant test-set error: `reaction` → `hot_take` (5 of 11 total errors).
 
 ---
 
