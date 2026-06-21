@@ -2,7 +2,7 @@
 **AI201 · Project 3**
 
 A fine-tuned text classifier that evaluates discourse quality in r/soccer posts. Given a Reddit post or comment, the model predicts whether it is analytical reasoning (`analysis`), a confident assertion without evidence (`hot_take`), or an immediate emotional response (`reaction`).
-
+Video Link: https://asu.zoom.us/rec/share/eSJmZpHy4hl4oyTedmu65ai23gt80tiZJp7upemk0i43F0SAxZjUyqT4WQyIS3zu.lkwLEE-E6jAq8JwI
 ---
 
 ## Community
